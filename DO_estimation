@@ -1,0 +1,234 @@
+var assetTable = ee.FeatureCollection('DOallGCB');
+var maskEmptyPixels = function(image) {
+  var withObs = image.select('num_observations_1km').gt(0)
+  return image.updateMask(withObs)
+}
+ 
+var names = assetTable.map(function(feature){
+  var point = ee.Geometry.Point(ee.Number.parse(feature.get('Lon')), ee.Number.parse(feature.get('Lat')));
+  var time = ee.Date(feature.get('Date'));
+  //var valu=feature.get('Value');
+  var id=ee.Number(feature.get('ID'));
+
+  var collection = ee.ImageCollection('MODIS/061/MYD09GA')
+                      .filterBounds(point)
+                      .filterDate(time.advance(-0, 'day'), time.advance(1, 'day'))
+                      .map(maskEmptyPixels)
+                      .map(maskClouds);
+
+  var collection2=ee.ImageCollection('MODIS/061/MYD11A1')
+                      .filterBounds(point)
+                      .filterDate(time.advance(-0, 'day'), time.advance(1, 'day'))
+  
+  var era5Filtered = ee.ImageCollection('ECMWF/ERA5_LAND/HOURLY')
+                //.filter(ee.Filter.date('2020-07-01', '2020-07-02'))
+                .filter(ee.Filter.date(time.advance(-0, 'hour'), time.advance(1, 'hour')))
+                .select('surface_solar_radiation_downwards_hourly');
+
+  if (collection === null) {
+    print("No images found for feature:", feature.get('ID'));
+    return feature;
+  }
+
+  else{
+  var imageMean = collection.median();
+  var imageMean2=collection.median();
+  var imageMean3=era5Filtered.median();
+  var reflectance = imageMean.reduceRegion({
+    reducer: ee.Reducer.mean(),
+    geometry: point,
+    scale: 10
+  });
+    var reflectance2 = imageMean2.reduceRegion({
+    reducer: ee.Reducer.mean(),
+    geometry: point,
+    scale: 10
+  });
+  var reflectance3 = imageMean3.reduceRegion({
+    reducer: ee.Reducer.mean(),
+    geometry: point,
+    scale: 10
+  });
+  
+   feature = feature.set(reflectance);
+   feature = feature.set(reflectance2);
+   feature = feature.set(reflectance3);
+   feature=feature.set('time',time);
+   
+  //return feature.get('name');
+   return feature;
+  }
+}
+)
+
+print('Feature :', names);
+
+
+// Define the properties to include in the exported table
+var exportProperties = {
+  'ID':'string',
+  'sur_refl_b01': 'float',
+  'sur_refl_b02': 'float',
+  'sur_refl_b03': 'float',
+  'sur_refl_b04': 'float',
+  'sur_refl_b05': 'float',
+  'sur_refl_b06': 'float',
+  'sur_refl_b07':'float',
+  'LST_Day_1km':'int16',
+  'surface_solar_radiation_downwards_sum':'float',
+  'Date':'string',
+  'DO':'float',
+  //'DateStr':'string',
+  'Lon':'string',
+  'Lat':'string'
+};
+
+//print(joinedFcMapped);
+// Export the joined FeatureCollection to a CSV file
+Export.table.toDrive({
+  collection: names,
+  description: 'joined_table',
+  fileFormat: 'CSV',
+  selectors: Object.keys(exportProperties)
+});
+
+
+
+// Define a region of interest as a point.  Change the coordinates
+// to get a classification of any place where there is imagery.
+var tableera5=ee.FeatureCollection("GCBDOMODISallfac");
+var gsw = ee.Image('JRC/GSW1_0/GlobalSurfaceWater');
+var Globallakes10km = ee.FeatureCollection('Globallake10km');
+
+var demImage = ee.ImageCollection("projects/sat-io/open-datasets/GLO-30").mean();
+//Map.addLayer(demImage);
+//var viz = {min:0, max:1000, palette:['ffffff','b7f0ae','21f600','0000FF','FDFF92','FF2700','d600ff']};
+var viz = {min:2, max:15, palette:['000000','FF2700','b7f0ae','21f600','0000FF']};
+  
+var VIS_WATER_MASK = {
+  palette: ['Green','Red']
+};
+
+var maskEmptyPixels = function(image) {
+  var withObs = image.select('num_observations_1km').gt(0);
+  return image.updateMask(withObs);
+};
+//prepare  data in a fised format
+function imgmaker1(image){
+  var start = image.get('system:time_start');
+  var lati = ee.Image.pixelLonLat().select('latitude').rename('Lati').abs();
+  var imapro=image.addBands(lati).addBands(demImage,['b1']);
+  var b1=imapro.select("surface_solar_radiation_downwards_sum").abs();
+  var b2=imapro.select("surface_thermal_radiation_downwards_sum").abs();    
+  var b3=imapro.select("surface_pressure").abs();
+  var b4=imapro.select("total_precipitation_sum").abs(); 
+  var b6=imapro.select("temperature_2m").abs();
+  var b7=imapro.select("b1");
+  var b8=imapro.select("Lati");
+  var b9=imapro.select("u_component_of_wind_10m").abs(); 
+  var b10=imapro.select("v_component_of_wind_10m").abs();
+  var b5=(b9.pow(2).add(b10.pow(2))).pow(0.5);
+  var bred=imapro.select("sur_refl_b01");
+  var Nir=imapro.select("sur_refl_b02");
+  var bgreen=imapro.select("sur_refl_b04");    
+  var bblue=imapro.select("sur_refl_b03");
+  var SWIR=imapro.select("sur_refl_b05");
+  var FAI=imapro.expression(
+    'NIR-RED-(SWIR-RED)*214/595', {
+      'RED': imapro.select("sur_refl_b01"),
+      'NIR': imapro.select("sur_refl_b02"),
+      'SWIR': imapro.select("sur_refl_b05")
+});
+  //var FAI=Nir.subtract(bred).subtract((SWIR.subtract(bred)).Multiply)
+  var Xc=bred.multiply(2.7689).add(bgreen.multiply(1.7517)).add(bblue.multiply(1.1302));
+  var Yc=bred.multiply(1.000).add(bgreen.multiply(4.5906)).add(bblue.multiply(0.0601));
+  var Zc=bgreen.multiply(0.0565).add(bblue.multiply(5.5943));
+  var xx=Xc.divide(Xc.add(Yc).add(Zc));
+  var yy=Yc.divide(Xc.add(Yc).add(Zc));
+  var aangle=(yy.subtract(0.3333)).atan2(xx.subtract(0.3333)).multiply(180).divide(Math.PI);
+  
+  var multibands = ee.Image([b1,b2,b3,b4,b5,b6,b7,b8,FAI,aangle]).rename(['SR', 'TR', 'Pres', 'Prec', 'Wind','AT','DEM','Lati','FAI','Acolor']);
+  //var multibands2=image.addBands(multibands).copyProperties(image, ['system:time_start']);
+  //var namemultibands=multibands.select(['B1','B2','B3','B4','B5','B6','B7','B8','B9','B8_1','B8_2','B2_1','B8_3','B9_1','B9_2'],['B1', 'B2', 'B3', 'B4', 'B5','B6','B7','B8','B9','B10','B11','B12','B13','B14','B15']);
+  //return namemultibands.set('system:time_start', start);
+  //var namemultibands=multibands.copyProperties(image, ["system:time_start"]);
+  return multibands;
+}
+
+var exportMonthlyData = function(year, month) {
+var startDate = ee.Date.fromYMD(year, month, 1);
+var endDate = startDate.advance(1, 'month');
+var filteredCollection1 = ee.ImageCollection('ECMWF/ERA5_LAND/DAILY_RAW')
+                      .filterDate(startDate, endDate)
+                      .map(function(image) {
+  var date = ee.Date(image.get('system:time_start')).format("YYYY-MM-dd");
+  date = ee.Date(date);
+    return image.set('date', date);
+  })
+  ; 
+
+var filteredCollection2 = ee.ImageCollection('MODIS/061/MYD09GA')
+                      //.filterBounds(point)
+                      .filterDate(startDate, endDate)
+                      .map(maskEmptyPixels)
+                      .map(maskClouds).map(function(image) {
+  var date = ee.Date(image.get('system:time_start')).format("YYYY-MM-dd");
+  date = ee.Date(date);
+    return image.set('date', date);
+  }); 
+  
+ var filterTimeEq = ee.Filter.equals({
+    leftField: 'date',
+    rightField: 'date'
+    });
+
+var simpleJoin = ee.Join.inner();
+// Apply the join and select all bands from both collections
+var joinedCollection = simpleJoin.apply(filteredCollection1, filteredCollection2, filterTimeEq) 
+    .map(function (joinedImage) {
+    var image1 = ee.Image(joinedImage.get('primary'));
+    var image2 = ee.Image(joinedImage.get('secondary'));
+    
+    // Merge all bands from both images
+    var mergedImage = image1.addBands(image2);
+    
+    return mergedImage;
+  });
+  
+var imageCollection = ee.ImageCollection(joinedCollection);
+var DOresult=imageCollection.map(RFpredic1);
+//var filteredCollection = MODISpre.filterDate(startDate, endDate);
+//var gt0mask = filteredCollection.median().gt(0.0);
+var ERA5refDO=DOresult.median().updateMask(water_mask);
+
+  
+var meanChinalakes = ERA5refDO.reduceRegions({
+  collection: Globallakes10km,
+  reducer: ee.Reducer.median().combine({
+  reducer2: ee.Reducer.stdDev(),
+  sharedInputs: true
+  }),
+  scale: 500,
+  tileScale: 4,
+  crs: "EPSG:4326"
+}); 
+//var FormatMonth=ee.Number(month).format('%02d');
+ var fileName='ERA5DO2';
+  // Export to CSV
+    Export.table.toDrive({  
+      description: year + '_'+ month,  
+      //fileNamePrefix: year + '_'+ month,  
+      collection: meanChinalakes,
+      folder:'ERA5DO_RFR5',
+      fileFormat: 'CSV',
+      selectors:['Hylak_id','median']
+  });  
+  
+};
+
+for (var year = 2002; year <= 2023; year++) {
+  for (var month = 1; month <= 12; month++) {
+    exportMonthlyData(year, month);
+  }
+}
+
